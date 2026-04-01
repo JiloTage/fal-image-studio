@@ -7,7 +7,6 @@ import {
   getApiKey,
   setApiKey,
   hasApiKey,
-  downloadResultJSON,
   dispatchGenerate,
   fetchManifest,
   getGhToken,
@@ -1424,7 +1423,6 @@ export default function App() {
           item.id === cardId ? applyCardState(item, cardState, images) : item
         )));
 
-        downloadResultJSON(record);
         saveToHistory(record, images);
       } catch (error) {
         setCards((prev) => prev.map((item) => (
