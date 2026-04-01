@@ -17,6 +17,7 @@ let _id = 0;
 const uid = () => `c${++_id}`;
 let dragPayload = null;
 const STUDIO_STATE_KEY = "fal_studio_state";
+const PENDING_REQUESTS_KEY = "fal_pending_requests";
 
 function isHostedPages() {
   if (typeof window === "undefined") return false;
@@ -112,6 +113,26 @@ function readStudioStateRaw() {
     console.error("Failed to parse fal_studio_state:", error);
     return null;
   }
+}
+
+function readPendingRequestsRaw() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PENDING_REQUESTS_KEY) || "[]");
+    return Array.isArray(saved) ? saved : [];
+  } catch (error) {
+    console.error("Failed to parse fal_pending_requests:", error);
+    return [];
+  }
+}
+
+function normalizePendingRequest(item) {
+  if (!item || typeof item !== "object" || typeof item.requestId !== "string" || !item.requestId) return null;
+  return {
+    requestId: item.requestId,
+    cardId: typeof item.cardId === "string" ? item.cardId : null,
+    cardState: normalizeCardState(item.cardState),
+    createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+  };
 }
 
 function historyRecordKey(item) {
@@ -1299,8 +1320,10 @@ export default function App() {
   const [localHistoryEntries, setLocalHistoryEntries] = useState([]);
   const [repoHistoryEntries, setRepoHistoryEntries] = useState([]);
   const [galleryTargetCardId, setGalleryTargetCardId] = useState(initialStudioState?.galleryTargetCardId || null);
+  const [pendingRequests, setPendingRequests] = useState(() => readPendingRequestsRaw().map(normalizePendingRequest).filter(Boolean));
   const cardRefs = useRef({});
   const canvasRef = useRef(null);
+  const pendingFailuresRef = useRef({});
 
   const galleryEntries = sortHistoryEntries([...localHistoryEntries, ...repoHistoryEntries]);
 
@@ -1319,6 +1342,10 @@ export default function App() {
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
   }, [loadLocalHistory]);
+
+  useEffect(() => {
+    localStorage.setItem(PENDING_REQUESTS_KEY, JSON.stringify(pendingRequests));
+  }, [pendingRequests]);
 
   useEffect(() => {
     let active = true;
@@ -1464,6 +1491,27 @@ export default function App() {
     setLocalHistoryEntries(normalizeHistoryEntries(filtered, "local"));
   }, []);
 
+  const addPendingRequest = useCallback((requestId, cardId, cardState) => {
+    const nextRequest = normalizePendingRequest({
+      requestId,
+      cardId,
+      cardState,
+      createdAt: new Date().toISOString(),
+    });
+    if (!nextRequest) return;
+
+    pendingFailuresRef.current[requestId] = 0;
+    setPendingRequests((prev) => {
+      const filtered = prev.filter((item) => item.requestId !== requestId);
+      return [...filtered, nextRequest];
+    });
+  }, []);
+
+  const clearPendingRequest = useCallback((requestId) => {
+    delete pendingFailuresRef.current[requestId];
+    setPendingRequests((prev) => prev.filter((item) => item.requestId !== requestId));
+  }, []);
+
   const addImageToCard = useCallback((cardId, src) => {
     if (!cardId || !src) return;
     setCards((prev) => prev.map((card) => {
@@ -1472,61 +1520,62 @@ export default function App() {
     }));
   }, []);
 
-  // ─── Polling for Actions mode ───
-  const pollingRef = useRef(null);
+  useEffect(() => {
+    if (pendingRequests.length === 0) return undefined;
 
-  const stopPolling = useCallback(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-  }, []);
+    let cancelled = false;
 
-  const startPolling = useCallback((cardId, requestId, fallbackCardState) => {
-    stopPolling();
-    let attempts = 0;
-    let failureCount = 0;
-    const maxAttempts = 40; // ~10 minutes at 15s interval
-    pollingRef.current = setInterval(async () => {
-      attempts++;
-      try {
-        const record = await fetchActionResult(requestId);
-        if (record) {
-          const images = extractOutputImages(record);
-          setCards((prev) => prev.map((c) =>
-            c.id === cardId
-              ? applyCardState(c, record?.cardState || record?.card_state || fallbackCardState, images)
-              : c
-          ));
-          saveToHistory(record, images);
-          stopPolling();
-          return;
+    const pollPendingRequests = async () => {
+      for (const pending of pendingRequests) {
+        if (cancelled) return;
+
+        const ageMs = Date.now() - Date.parse(pending.createdAt || "");
+        if (Number.isFinite(ageMs) && ageMs > 10 * 60 * 1000) {
+          setCards((prev) => prev.map((card) => (
+            card.id === pending.cardId
+              ? { ...card, status: "idle", error: "Timed out waiting for Actions result. Check GitHub Actions tab." }
+              : card
+          )));
+          clearPendingRequest(pending.requestId);
+          continue;
         }
-        failureCount = 0;
-      } catch (error) {
-        failureCount += 1;
-        if (failureCount >= 2) {
+
+        try {
+          const record = await fetchActionResult(pending.requestId);
+          if (!record) continue;
+
+          const images = extractOutputImages(record);
+          setCards((prev) => prev.map((card) => (
+            card.id === pending.cardId
+              ? applyCardState(card, record?.cardState || record?.card_state || pending.cardState, images)
+              : card
+          )));
+          saveToHistory(record, images);
+          clearPendingRequest(pending.requestId);
+        } catch (error) {
+          const currentFailures = (pendingFailuresRef.current[pending.requestId] || 0) + 1;
+          pendingFailuresRef.current[pending.requestId] = currentFailures;
+          if (currentFailures < 2) continue;
+
           const message = String(error?.message || "Failed to fetch Actions result");
           const detail = message.includes("Failed to fetch")
             ? "Actions finished, but the browser could not read the artifact from GitHub. This handoff is currently failing on Pages."
             : message;
-          setCards((prev) => prev.map((c) =>
-            c.id === cardId ? { ...c, status: "idle", error: detail } : c
-          ));
-          stopPolling();
-          return;
+          setCards((prev) => prev.map((card) => (
+            card.id === pending.cardId ? { ...card, status: "idle", error: detail } : card
+          )));
+          clearPendingRequest(pending.requestId);
         }
       }
-      if (attempts >= maxAttempts) {
-        setCards((prev) => prev.map((c) =>
-          c.id === cardId ? { ...c, status: "idle", error: "Timed out waiting for Actions result. Check GitHub Actions tab." } : c
-        ));
-        stopPolling();
-      }
-    }, 15000);
-  }, [saveToHistory, stopPolling]);
+    };
 
-  useEffect(() => stopPolling, [stopPolling]);
+    pollPendingRequests();
+    const intervalId = window.setInterval(pollPendingRequests, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [clearPendingRequest, pendingRequests, saveToHistory]);
 
   // ─── Generate: local direct or Actions dispatch ───
   const handleGenerate = useCallback(async (cardId) => {
@@ -1604,14 +1653,14 @@ export default function App() {
       return;
     }
 
-      try {
+    try {
       const { requestId } = await dispatchGenerate({
         model: card.model,
         prompt: card.prompt.trim(),
         imageUrl: card.inputImages[0] || "",
         cardState,
       });
-      startPolling(cardId, requestId, cardState);
+      addPendingRequest(requestId, cardId, cardState);
     } catch (error) {
       setCards((prev) => prev.map((item) => (
         item.id === cardId
@@ -1619,7 +1668,7 @@ export default function App() {
           : item
       )));
     }
-  }, [cards, saveToHistory, startPolling]);
+  }, [addPendingRequest, cards, saveToHistory]);
 
   const restoreHistoryEntry = useCallback((cardId, entry) => {
     const cardState = normalizeCardState(entry?.cardState, entry);
