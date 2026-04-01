@@ -142,44 +142,86 @@ async function inflateZipEntry(compressionMethod, compressed) {
   throw new Error(`Unsupported zip compression method: ${compressionMethod}`);
 }
 
+function findEndOfCentralDirectory(bytes, view) {
+  const minOffset = Math.max(0, bytes.length - 0xffff - 22);
+  for (let offset = bytes.length - 22; offset >= minOffset; offset -= 1) {
+    if (view.getUint32(offset, true) === 0x06054b50) return offset;
+  }
+  throw new Error("Invalid ZIP: missing end of central directory");
+}
+
+function listZipEntries(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+  const eocdOffset = findEndOfCentralDirectory(bytes, view);
+  const entryCount = view.getUint16(eocdOffset + 10, true);
+  const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true);
+  const entries = [];
+  let offset = centralDirectoryOffset;
+
+  for (let index = 0; index < entryCount; index += 1) {
+    if (view.getUint32(offset, true) !== 0x02014b50) {
+      throw new Error("Invalid ZIP: bad central directory entry");
+    }
+
+    const compressionMethod = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const fileNameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localHeaderOffset = view.getUint32(offset + 42, true);
+    const nameStart = offset + 46;
+    const nameEnd = nameStart + fileNameLength;
+    const entryName = new TextDecoder().decode(bytes.slice(nameStart, nameEnd));
+
+    entries.push({
+      entryName,
+      compressionMethod,
+      compressedSize,
+      localHeaderOffset,
+    });
+
+    offset = nameEnd + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+function readZipEntryData(bytes, view, entry) {
+  const localOffset = entry.localHeaderOffset;
+  if (view.getUint32(localOffset, true) !== 0x04034b50) {
+    throw new Error("Invalid ZIP: bad local file header");
+  }
+
+  const fileNameLength = view.getUint16(localOffset + 26, true);
+  const extraLength = view.getUint16(localOffset + 28, true);
+  const dataStart = localOffset + 30 + fileNameLength + extraLength;
+  const dataEnd = dataStart + entry.compressedSize;
+  return bytes.slice(dataStart, dataEnd);
+}
+
 async function extractJsonFromZip(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   const view = new DataView(arrayBuffer);
-  let offset = 0;
+  const entries = listZipEntries(arrayBuffer);
+  const jsonEntry = entries.find((entry) => !entry.entryName.endsWith("/") && entry.entryName.toLowerCase().endsWith(".json"));
 
-  while (offset + 30 <= bytes.length) {
-    const signature = view.getUint32(offset, true);
-    if (signature !== 0x04034b50) break;
-
-    const compressionMethod = view.getUint16(offset + 8, true);
-    const compressedSize = view.getUint32(offset + 18, true);
-    const fileNameLength = view.getUint16(offset + 26, true);
-    const extraLength = view.getUint16(offset + 28, true);
-    const nameStart = offset + 30;
-    const nameEnd = nameStart + fileNameLength;
-    const entryName = new TextDecoder().decode(bytes.slice(nameStart, nameEnd));
-    const dataStart = nameEnd + extraLength;
-    const dataEnd = dataStart + compressedSize;
-
-    if (dataEnd > bytes.length) break;
-
-    if (!entryName.endsWith("/")) {
-      const inflated = await inflateZipEntry(compressionMethod, bytes.slice(dataStart, dataEnd));
-      if (entryName.toLowerCase().endsWith(".json")) {
-        return JSON.parse(new TextDecoder().decode(inflated));
-      }
-    }
-
-    offset = dataEnd;
+  if (!jsonEntry) {
+    throw new Error("No JSON result found in artifact");
   }
 
-  throw new Error("No JSON result found in artifact");
+  const inflated = await inflateZipEntry(
+    jsonEntry.compressionMethod,
+    readZipEntryData(bytes, view, jsonEntry),
+  );
+  return JSON.parse(new TextDecoder().decode(inflated));
 }
 
 export async function fetchActionResult(requestId) {
   if (!requestId) return null;
 
-  const artifactsRes = await githubFetch("/actions/artifacts?per_page=100");
+  const artifactName = `fal-result-${requestId}`;
+  const artifactsRes = await githubFetch(`/actions/artifacts?per_page=100&name=${encodeURIComponent(artifactName)}`);
   if (!artifactsRes.ok) {
     const body = await artifactsRes.text();
     throw new Error(`GitHub artifacts API ${artifactsRes.status}: ${body}`);
@@ -187,7 +229,7 @@ export async function fetchActionResult(requestId) {
 
   const payload = await artifactsRes.json();
   const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
-  const artifact = artifacts.find((item) => item?.name === `fal-result-${requestId}` && !item?.expired);
+  const artifact = artifacts.find((item) => item?.name === artifactName && !item?.expired);
   if (!artifact?.id) return null;
 
   const downloadRes = await githubFetch(`/actions/artifacts/${artifact.id}/zip`, { redirect: "follow" });

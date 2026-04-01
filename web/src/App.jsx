@@ -1423,6 +1423,7 @@ export default function App() {
   const startPolling = useCallback((cardId, requestId, fallbackCardState) => {
     stopPolling();
     let attempts = 0;
+    let failureCount = 0;
     const maxAttempts = 40; // ~10 minutes at 15s interval
     pollingRef.current = setInterval(async () => {
       attempts++;
@@ -1439,7 +1440,21 @@ export default function App() {
           stopPolling();
           return;
         }
-      } catch (_) { /* ignore fetch errors */ }
+        failureCount = 0;
+      } catch (error) {
+        failureCount += 1;
+        if (failureCount >= 2) {
+          const message = String(error?.message || "Failed to fetch Actions result");
+          const detail = message.includes("Failed to fetch")
+            ? "Actions finished, but the browser could not read the artifact from GitHub. This handoff is currently failing on Pages."
+            : message;
+          setCards((prev) => prev.map((c) =>
+            c.id === cardId ? { ...c, status: "idle", error: detail } : c
+          ));
+          stopPolling();
+          return;
+        }
+      }
       if (attempts >= maxAttempts) {
         setCards((prev) => prev.map((c) =>
           c.id === cardId ? { ...c, status: "idle", error: "Timed out waiting for Actions result. Check GitHub Actions tab." } : c
