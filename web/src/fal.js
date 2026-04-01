@@ -1,6 +1,5 @@
 import { fal } from "@fal-ai/client";
 
-const STORAGE_KEY = "fal_api_key";
 const GH_TOKEN_KEY = "gh_pat";
 const GH_REPO_KEY = "gh_repo";
 const ENV_KEY = import.meta.env.VITE_FAL_KEY || "";
@@ -8,11 +7,7 @@ const ENV_KEY = import.meta.env.VITE_FAL_KEY || "";
 // ─── API Key ───
 
 export function getApiKey() {
-  return ENV_KEY || localStorage.getItem(STORAGE_KEY) || "";
-}
-
-export function setApiKey(key) {
-  localStorage.setItem(STORAGE_KEY, key);
+  return ENV_KEY || "";
 }
 
 export function hasApiKey() {
@@ -29,8 +24,21 @@ export function setGhToken(token) {
   localStorage.setItem(GH_TOKEN_KEY, token);
 }
 
+function inferGhRepoFromLocation() {
+  if (typeof window === "undefined") return "";
+
+  const host = window.location.hostname || "";
+  if (!host.endsWith("github.io")) return "";
+
+  const owner = host.replace(/\.github\.io$/i, "");
+  const segments = window.location.pathname.split("/").filter(Boolean);
+  if (segments.length > 0) return `${owner}/${segments[0]}`;
+  if (owner) return `${owner}/${owner}.github.io`;
+  return "";
+}
+
 export function getGhRepo() {
-  return localStorage.getItem(GH_REPO_KEY) || "";
+  return localStorage.getItem(GH_REPO_KEY) || inferGhRepoFromLocation();
 }
 
 export function setGhRepo(repo) {

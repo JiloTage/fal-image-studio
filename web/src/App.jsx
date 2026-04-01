@@ -4,15 +4,12 @@ import { AI_MODELS } from "./models";
 import {
   runModel,
   uploadImage,
-  getApiKey,
-  setApiKey,
   hasApiKey,
   dispatchGenerate,
   fetchManifest,
   getGhToken,
   setGhToken,
   getGhRepo,
-  setGhRepo,
   hasGhConfig,
 } from "./fal";
 
@@ -20,6 +17,11 @@ let _id = 0;
 const uid = () => `c${++_id}`;
 let dragPayload = null;
 const STUDIO_STATE_KEY = "fal_studio_state";
+
+function isHostedPages() {
+  if (typeof window === "undefined") return false;
+  return window.location.hostname.endsWith("github.io");
+}
 
 function defaultParams(modelId) {
   const model = AI_MODELS.find((m) => m.id === modelId);
@@ -874,9 +876,10 @@ function GenCard({
 }
 
 function SettingsModal({ onClose }) {
-  const [falKey, setFalKey] = useState(getApiKey());
+  const hostedPages = isHostedPages();
   const [ghToken, setGhTokenVal] = useState(getGhToken());
-  const [ghRepo, setGhRepoVal] = useState(getGhRepo());
+  const detectedRepo = getGhRepo();
+  const canSave = (!!ghToken && !!detectedRepo) || !hostedPages;
 
   const inputStyle = {
     width: "100%",
@@ -905,28 +908,21 @@ function SettingsModal({ onClose }) {
       >
         <h2 style={{ color: C.text, fontSize: 18, fontWeight: 700, margin: 0 }}>Settings</h2>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <label style={{ color: C.textMuted, fontSize: 12, fontWeight: 600 }}>
-            fal.ai API Key <span style={{ fontWeight: 400 }}>(local direct generation)</span>
-          </label>
-          <input type="password" value={falKey} onChange={(e) => setFalKey(e.target.value)}
-            placeholder="fal_..." style={inputStyle}
-            onFocus={(e) => { e.target.style.borderColor = C.accent; }}
-            onBlur={(e) => { e.target.style.borderColor = C.border; }}
-          />
-        </div>
-
-        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ color: C.textMuted, fontSize: 12 }}>
-            <span style={{ fontWeight: 600 }}>GitHub Actions</span> (for GitHub Pages deployment)
+            <span style={{ fontWeight: 600 }}>GitHub Actions</span> (required for GitHub Pages)
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <label style={{ color: C.textMuted, fontSize: 12 }}>Repository (owner/repo)</label>
-            <input type="text" value={ghRepo} onChange={(e) => setGhRepoVal(e.target.value)}
-              placeholder="user/fal-image-studio" style={inputStyle}
-              onFocus={(e) => { e.target.style.borderColor = C.accent; }}
-              onBlur={(e) => { e.target.style.borderColor = C.border; }}
-            />
+            <label style={{ color: C.textMuted, fontSize: 12 }}>Detected repository</label>
+            <div
+              style={{
+                ...inputStyle,
+                color: detectedRepo ? C.text : C.textFaint,
+                background: C.bg,
+              }}
+            >
+              {detectedRepo || "Could not detect repository from the current URL"}
+            </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <label style={{ color: C.textMuted, fontSize: 12 }}>Personal Access Token (repo scope)</label>
@@ -938,30 +934,43 @@ function SettingsModal({ onClose }) {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 11, color: C.textFaint }}>
+            `FAL_KEY` is read from the build environment locally. GitHub Pages uses the repository secret on Actions runners.
+          </div>
+        </div>
+
+        <div style={{ display: "flex" }}>
           <button
             onClick={() => {
-              setApiKey(falKey);
               setGhToken(ghToken);
-              setGhRepo(ghRepo);
-              onClose();
+              if (canSave) {
+                onClose();
+              }
             }}
+            disabled={!canSave}
             style={{
-              flex: 1, padding: "10px 0", borderRadius: 6, border: "none",
-              background: C.green, color: "#fff", fontWeight: 600, fontSize: 14, cursor: "pointer",
+              flex: 1,
+              padding: "10px 0",
+              borderRadius: 6,
+              border: "none",
+              background: canSave ? C.green : C.surface,
+              color: canSave ? "#fff" : C.textFaint,
+              fontWeight: 600,
+              fontSize: 14,
+              cursor: canSave ? "pointer" : "not-allowed",
             }}
           >Save</button>
-          <button
-            onClick={onClose}
-            style={{
-              padding: "10px 16px", borderRadius: 6, border: `1px solid ${C.border}`,
-              background: C.surface, color: C.textMuted, fontSize: 14, cursor: "pointer",
-            }}
-          >Cancel</button>
         </div>
 
         <div style={{ fontSize: 11, color: C.textFaint }}>
-          {hasApiKey() ? "Direct mode: fal.ai key set" : hasGhConfig() ? "Actions mode: GitHub configured" : "No generation method configured"}
+          {hasGhConfig()
+            ? "Actions mode: GitHub configured"
+            : hasApiKey()
+              ? "Direct mode: local .env key detected"
+              : hostedPages
+                ? "GitHub Pages requires a PAT before generation can run"
+                : "Local direct mode uses .env. Actions mode needs a PAT."}
         </div>
       </div>
     </div>
@@ -1197,7 +1206,7 @@ function HistoryPanel({
 export default function App() {
   const initialStudioStateRef = useRef(loadStudioState());
   const initialStudioState = initialStudioStateRef.current;
-  const [showSettings, setShowSettings] = useState(!hasApiKey() && !hasGhConfig());
+  const [showSettings, setShowSettings] = useState(isHostedPages() ? !hasGhConfig() : false);
   const [cards, setCards] = useState(initialStudioState?.cards || getDefaultStudioCards());
   const [connections, setConnections] = useState(initialStudioState?.connections || []);
   const [connectFrom, setConnectFrom] = useState(null);
@@ -1438,7 +1447,13 @@ export default function App() {
     if (!hasGhConfig()) {
       setCards((prev) => prev.map((item) => (
         item.id === cardId
-          ? { ...item, status: "idle", error: "No API key or GitHub config. Open Settings." }
+          ? {
+            ...item,
+            status: "idle",
+            error: isHostedPages()
+              ? "GitHub repository and PAT are required on GitHub Pages. Open Settings."
+              : "No API key or GitHub config. Open Settings.",
+          }
           : item
       )));
       return;
