@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(node:*)",
+      "Bash(uv sync:*)",
+      "WebSearch",
+      "Bash(npx vite:*)"
+    ]
+  }
+}
