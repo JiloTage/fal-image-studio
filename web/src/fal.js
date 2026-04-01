@@ -4,8 +4,6 @@ const GH_TOKEN_KEY = "gh_pat";
 const GH_REPO_KEY = "gh_repo";
 const ENV_KEY = import.meta.env.VITE_FAL_KEY || "";
 
-// ─── API Key ───
-
 export function getApiKey() {
   return ENV_KEY || "";
 }
@@ -13,8 +11,6 @@ export function getApiKey() {
 export function hasApiKey() {
   return !!getApiKey();
 }
-
-// ─── GitHub Settings ───
 
 export function getGhToken() {
   return localStorage.getItem(GH_TOKEN_KEY) || "";
@@ -49,6 +45,10 @@ export function hasGhConfig() {
   return !!getGhToken() && !!getGhRepo();
 }
 
+function createRequestId() {
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function encodeBase64JSON(value) {
   if (!value) return "";
   const json = JSON.stringify(value);
@@ -61,8 +61,6 @@ function encodeBase64JSON(value) {
 
   return btoa(binary);
 }
-
-// ─── fal.ai direct API ───
 
 function ensureConfig() {
   const key = getApiKey();
@@ -88,40 +86,46 @@ export async function runModel(endpoint, input, onProgress) {
   return result.data;
 }
 
-// ─── GitHub Actions dispatch ───
-
-export async function dispatchGenerate({ model, prompt, imageUrl, cardState }) {
+async function githubFetch(path, init = {}) {
   const token = getGhToken();
   const repo = getGhRepo();
   if (!token || !repo) throw new Error("GitHub PAT and repo not configured");
 
-  const res = await fetch(
-    `https://api.github.com/repos/${repo}/actions/workflows/generate.yml/dispatches`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github.v3+json",
+  return fetch(`https://api.github.com/repos/${repo}${path}`, {
+    ...init,
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(init.headers || {}),
+    },
+  });
+}
+
+export async function dispatchGenerate({ model, prompt, imageUrl, cardState }) {
+  const requestId = createRequestId();
+
+  const res = await githubFetch("/actions/workflows/generate.yml/dispatches", {
+    method: "POST",
+    body: JSON.stringify({
+      ref: "main",
+      inputs: {
+        model,
+        prompt,
+        image_url: imageUrl || "",
+        card_state_b64: encodeBase64JSON(cardState),
+        request_id: requestId,
       },
-      body: JSON.stringify({
-        ref: "main",
-        inputs: {
-          model,
-          prompt,
-          image_url: imageUrl || "",
-          card_state_b64: encodeBase64JSON(cardState),
-        },
-      }),
-    }
-  );
+    }),
+  });
 
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`GitHub API ${res.status}: ${body}`);
   }
-}
 
-// ─── Manifest polling ───
+  return { requestId };
+}
 
 export async function fetchManifest(baseUrl) {
   const res = await fetch(`${baseUrl}outputs.json`, { cache: "no-store" });
@@ -129,7 +133,71 @@ export async function fetchManifest(baseUrl) {
   return res.json();
 }
 
-// ─── JSON download ───
+async function inflateZipEntry(compressionMethod, compressed) {
+  if (compressionMethod === 0) return compressed;
+  if (compressionMethod === 8) {
+    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  throw new Error(`Unsupported zip compression method: ${compressionMethod}`);
+}
+
+async function extractJsonFromZip(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+  let offset = 0;
+
+  while (offset + 30 <= bytes.length) {
+    const signature = view.getUint32(offset, true);
+    if (signature !== 0x04034b50) break;
+
+    const compressionMethod = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const fileNameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const nameEnd = nameStart + fileNameLength;
+    const entryName = new TextDecoder().decode(bytes.slice(nameStart, nameEnd));
+    const dataStart = nameEnd + extraLength;
+    const dataEnd = dataStart + compressedSize;
+
+    if (dataEnd > bytes.length) break;
+
+    if (!entryName.endsWith("/")) {
+      const inflated = await inflateZipEntry(compressionMethod, bytes.slice(dataStart, dataEnd));
+      if (entryName.toLowerCase().endsWith(".json")) {
+        return JSON.parse(new TextDecoder().decode(inflated));
+      }
+    }
+
+    offset = dataEnd;
+  }
+
+  throw new Error("No JSON result found in artifact");
+}
+
+export async function fetchActionResult(requestId) {
+  if (!requestId) return null;
+
+  const artifactsRes = await githubFetch("/actions/artifacts?per_page=100");
+  if (!artifactsRes.ok) {
+    const body = await artifactsRes.text();
+    throw new Error(`GitHub artifacts API ${artifactsRes.status}: ${body}`);
+  }
+
+  const payload = await artifactsRes.json();
+  const artifacts = Array.isArray(payload?.artifacts) ? payload.artifacts : [];
+  const artifact = artifacts.find((item) => item?.name === `fal-result-${requestId}` && !item?.expired);
+  if (!artifact?.id) return null;
+
+  const downloadRes = await githubFetch(`/actions/artifacts/${artifact.id}/zip`, { redirect: "follow" });
+  if (!downloadRes.ok) {
+    const body = await downloadRes.text();
+    throw new Error(`GitHub artifact download ${downloadRes.status}: ${body}`);
+  }
+
+  return extractJsonFromZip(await downloadRes.arrayBuffer());
+}
 
 function formatFileTimestamp(timestamp) {
   const date = new Date(timestamp);

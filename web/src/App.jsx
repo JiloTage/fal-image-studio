@@ -5,7 +5,7 @@ import {
   runModel,
   hasApiKey,
   dispatchGenerate,
-  fetchManifest,
+  fetchActionResult,
   getGhToken,
   setGhToken,
   getGhRepo,
@@ -1046,7 +1046,7 @@ function SettingsModal({ onClose }) {
               ? "Direct mode: local .env key detected"
               : hostedPages
                 ? "GitHub Pages requires a PAT before generation can run"
-                : "Local direct mode uses .env. Actions mode needs a PAT."}
+              : "Local direct mode uses .env. Actions mode stores results in this browser via localStorage."}
         </div>
       </div>
     </div>
@@ -1322,7 +1322,6 @@ export default function App() {
         if (!response.ok) return;
         const manifest = await response.json();
         if (active && Array.isArray(manifest)) {
-          manifestCountRef.current = manifest.length;
           setRepoHistoryEntries(normalizeHistoryEntries(manifest, "repo"));
         }
       } catch (error) {
@@ -1413,7 +1412,6 @@ export default function App() {
 
   // ─── Polling for Actions mode ───
   const pollingRef = useRef(null);
-  const manifestCountRef = useRef(0);
 
   const stopPolling = useCallback(() => {
     if (pollingRef.current) {
@@ -1422,29 +1420,24 @@ export default function App() {
     }
   }, []);
 
-  const startPolling = useCallback((cardId, prevCount, fallbackCardState) => {
+  const startPolling = useCallback((cardId, requestId, fallbackCardState) => {
     stopPolling();
     let attempts = 0;
     const maxAttempts = 40; // ~10 minutes at 15s interval
     pollingRef.current = setInterval(async () => {
       attempts++;
       try {
-        const manifest = await fetchManifest(import.meta.env.BASE_URL);
-        if (manifest.length > prevCount) {
-          // New result found - pick the latest
-          const latest = manifest[0];
-          const images = extractOutputImages(latest);
-          if (images.length > 0) {
-            setCards((prev) => prev.map((c) =>
-              c.id === cardId
-                ? applyCardState(c, latest?.cardState || latest?.card_state || fallbackCardState, images)
-                : c
-            ));
-            manifestCountRef.current = manifest.length;
-            setRepoHistoryEntries(normalizeHistoryEntries(manifest, "repo"));
-            stopPolling();
-            return;
-          }
+        const record = await fetchActionResult(requestId);
+        if (record) {
+          const images = extractOutputImages(record);
+          setCards((prev) => prev.map((c) =>
+            c.id === cardId
+              ? applyCardState(c, record?.cardState || record?.card_state || fallbackCardState, images)
+              : c
+          ));
+          saveToHistory(record, images);
+          stopPolling();
+          return;
         }
       } catch (_) { /* ignore fetch errors */ }
       if (attempts >= maxAttempts) {
@@ -1454,7 +1447,7 @@ export default function App() {
         stopPolling();
       }
     }, 15000);
-  }, [stopPolling]);
+  }, [saveToHistory, stopPolling]);
 
   useEffect(() => stopPolling, [stopPolling]);
 
@@ -1534,15 +1527,14 @@ export default function App() {
       return;
     }
 
-    try {
-      await dispatchGenerate({
+      try {
+      const { requestId } = await dispatchGenerate({
         model: card.model,
         prompt: card.prompt.trim(),
         imageUrl: card.inputImages[0] || "",
         cardState,
       });
-      // Start polling for result
-      startPolling(cardId, manifestCountRef.current, cardState);
+      startPolling(cardId, requestId, cardState);
     } catch (error) {
       setCards((prev) => prev.map((item) => (
         item.id === cardId

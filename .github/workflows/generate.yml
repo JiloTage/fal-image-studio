@@ -1,4 +1,5 @@
 name: Generate Images
+run-name: Generate ${{ inputs.model }} [${{ inputs.request_id || github.run_id }}]
 
 on:
   workflow_dispatch:
@@ -24,10 +25,13 @@ on:
         description: "Base64-encoded card snapshot from the web UI"
         required: false
         type: string
+      request_id:
+        description: "Client-generated request id for artifact retrieval"
+        required: false
+        type: string
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 jobs:
   generate:
@@ -48,6 +52,7 @@ jobs:
           INPUT_PROMPT: ${{ inputs.prompt }}
           INPUT_IMAGE_URL: ${{ inputs.image_url }}
           INPUT_CARD_STATE_B64: ${{ inputs.card_state_b64 }}
+          INPUT_REQUEST_ID: ${{ inputs.request_id }}
         run: |
           if [ -n "$INPUT_CARD_STATE_B64" ]; then
             uv run fal-studio run "$INPUT_MODEL" --card-state-b64 "$INPUT_CARD_STATE_B64"
@@ -57,23 +62,11 @@ jobs:
             uv run fal-studio run "$INPUT_MODEL" -p "$INPUT_PROMPT"
           fi
 
-      - name: Commit results
-        env:
-          INPUT_MODEL: ${{ inputs.model }}
-          INPUT_PROMPT: ${{ inputs.prompt }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f outputs/
-          if git diff --staged --quiet; then
-            echo "No new outputs to commit"
-          else
-            git commit -m "Generated: ${INPUT_MODEL} - ${INPUT_PROMPT}"
-            git push
-          fi
-
-      - name: Trigger deploy
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run deploy.yml --ref main
+      - name: Upload result artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fal-result-${{ inputs.request_id || github.run_id }}
+          path: outputs/*.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
