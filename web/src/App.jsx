@@ -3,7 +3,6 @@ import { C } from "./theme";
 import { AI_MODELS } from "./models";
 import {
   runModel,
-  uploadImage,
   hasApiKey,
   dispatchGenerate,
   fetchManifest,
@@ -252,6 +251,50 @@ function applyCardState(card, cardState, imageUrls = []) {
   };
 }
 
+function normalizeDroppedUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  const candidates = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+
+  for (const candidate of candidates) {
+    if (/^https?:\/\//i.test(candidate)) return candidate;
+  }
+
+  return "";
+}
+
+function extractUrlFromHtml(html) {
+  const match = String(html || "").match(/<img[^>]+src=["']([^"']+)["']/i);
+  return match ? normalizeDroppedUrl(match[1]) : "";
+}
+
+function extractDroppedImageUrl(dataTransfer) {
+  if (!dataTransfer) return "";
+
+  const uriList = normalizeDroppedUrl(dataTransfer.getData("text/uri-list"));
+  if (uriList) return uriList;
+
+  const firefoxUrl = dataTransfer.getData("text/x-moz-url");
+  const firefoxMatch = normalizeDroppedUrl(firefoxUrl);
+  if (firefoxMatch) return firefoxMatch;
+
+  const downloadUrl = dataTransfer.getData("DownloadURL");
+  if (downloadUrl) {
+    const parts = downloadUrl.split(":");
+    const maybeUrl = normalizeDroppedUrl(parts.slice(2).join(":"));
+    if (maybeUrl) return maybeUrl;
+  }
+
+  const plain = normalizeDroppedUrl(dataTransfer.getData("text/plain"));
+  if (plain) return plain;
+
+  return extractUrlFromHtml(dataTransfer.getData("text/html"));
+}
+
 function syncUidCounter(cards) {
   const maxId = cards.reduce((max, card) => {
     const match = /^c(\d+)$/.exec(card.id || "");
@@ -380,10 +423,9 @@ function ImageThumb({ src, size = 52, onRemove, draggable, cardId, onClick, titl
   );
 }
 
-function DropZone({ onDrop, onFileDrop, children, label }) {
+function DropZone({ onDrop, onUrlDrop, children, label }) {
   const [over, setOver] = useState(false);
   const hasChildren = Array.isArray(children) ? children.length > 0 : !!children;
-  const fileRef = useRef(null);
 
   const handleDrop = (e) => {
     e.preventDefault();
@@ -392,11 +434,9 @@ function DropZone({ onDrop, onFileDrop, children, label }) {
       onDrop(dragPayload);
       return;
     }
-    const files = e.dataTransfer.files;
-    if (files.length > 0 && onFileDrop) {
-      for (const file of files) {
-        if (file.type.startsWith("image/")) onFileDrop(file);
-      }
+    const droppedUrl = extractDroppedImageUrl(e.dataTransfer);
+    if (droppedUrl && onUrlDrop) {
+      onUrlDrop(droppedUrl);
     }
   };
 
@@ -409,7 +449,12 @@ function DropZone({ onDrop, onFileDrop, children, label }) {
       }}
       onDragLeave={() => setOver(false)}
       onDrop={handleDrop}
-      onClick={() => fileRef.current?.click()}
+      onClick={() => {
+        if (!onUrlDrop) return;
+        const nextUrl = window.prompt("Paste an image URL");
+        const normalized = normalizeDroppedUrl(nextUrl);
+        if (normalized) onUrlDrop(normalized);
+      }}
       style={{
         minHeight: 48,
         borderRadius: 6,
@@ -424,23 +469,10 @@ function DropZone({ onDrop, onFileDrop, children, label }) {
         alignItems: "center",
       }}
     >
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        multiple
-        hidden
-        onChange={(e) => {
-          if (onFileDrop) {
-            for (const file of e.target.files) onFileDrop(file);
-          }
-          e.target.value = "";
-        }}
-      />
       {children}
       {!hasChildren && (
         <span style={{ color: C.textFaint, fontSize: 11, margin: "auto", userSelect: "none" }}>
-          {over ? "+ Drop" : label || "Drop or click to add images"}
+          {over ? "+ Drop" : label || "Drop a web image or click to paste URL"}
         </span>
       )}
     </div>
@@ -632,13 +664,9 @@ function GenCard({
     }
   }, [card, onUpdate, onAutoConnect]);
 
-  const handleFileDrop = useCallback(async (file) => {
-    try {
-      const url = await uploadImage(file);
-      onUpdate({ ...card, inputImages: [...card.inputImages, url] });
-    } catch (error) {
-      console.error("Upload failed:", error);
-    }
+  const handleUrlDrop = useCallback((url) => {
+    if (!url || card.inputImages.includes(url)) return;
+    onUpdate({ ...card, inputImages: [...card.inputImages, url], error: null });
   }, [card, onUpdate]);
 
   return (
@@ -750,7 +778,12 @@ function GenCard({
           >
             Input
           </div>
-          <DropZone onDrop={handleDropInput} onFileDrop={handleFileDrop} label="Drop images or click to upload">
+          {!hasApiKey() && hasGhConfig() && (
+            <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 6, lineHeight: 1.4 }}>
+              Drag an online image here, or click to paste its URL.
+            </div>
+          )}
+          <DropZone onDrop={handleDropInput} onUrlDrop={handleUrlDrop} label="Drop a web image or click to paste URL">
             {card.inputImages.map((src, index) => (
               <ImageThumb
                 key={`${src}-${index}`}
