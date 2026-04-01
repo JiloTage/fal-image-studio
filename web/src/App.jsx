@@ -23,6 +23,23 @@ function isHostedPages() {
   return window.location.hostname.endsWith("github.io");
 }
 
+function buildPatCreationUrl(repoFullName) {
+  const [owner, repo] = String(repoFullName || "").split("/");
+  const params = new URLSearchParams({
+    name: "fal-image-studio-actions",
+    description: "Dispatch generate.yml for fal-image-studio",
+    expires_in: "30",
+    actions: "write",
+  });
+
+  if (owner) params.set("target_name", owner);
+
+  return {
+    url: `https://github.com/settings/personal-access-tokens/new?${params.toString()}`,
+    repoName: repo || repoFullName || "this repository",
+  };
+}
+
 function defaultParams(modelId) {
   const model = AI_MODELS.find((m) => m.id === modelId);
   const params = {};
@@ -880,6 +897,7 @@ function SettingsModal({ onClose }) {
   const [ghToken, setGhTokenVal] = useState(getGhToken());
   const detectedRepo = getGhRepo();
   const canSave = (!!ghToken && !!detectedRepo) || !hostedPages;
+  const patSetup = buildPatCreationUrl(detectedRepo);
 
   const inputStyle = {
     width: "100%",
@@ -931,6 +949,17 @@ function SettingsModal({ onClose }) {
               onFocus={(e) => { e.target.style.borderColor = C.accent; }}
               onBlur={(e) => { e.target.style.borderColor = C.border; }}
             />
+            <div style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.45 }}>
+              <a
+                href={patSetup.url}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: C.accent }}
+              >
+                Create a fine-grained PAT with `Actions: write`
+              </a>
+              {" "}and select only `{patSetup.repoName}` under Repository access.
+            </div>
           </div>
         </div>
 
