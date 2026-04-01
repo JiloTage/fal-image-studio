@@ -238,7 +238,57 @@ export async function fetchActionResult(requestId) {
     throw new Error(`GitHub artifact download ${downloadRes.status}: ${body}`);
   }
 
-  return extractJsonFromZip(await downloadRes.arrayBuffer());
+  const record = await extractJsonFromZip(await downloadRes.arrayBuffer());
+  if (record && typeof record === "object") {
+    record.artifact_name = artifactName;
+    record.request_id = requestId;
+  }
+  return record;
+}
+
+async function fetchActionResultFromArtifact(artifact) {
+  if (!artifact?.id) return null;
+
+  const downloadRes = await githubFetch(`/actions/artifacts/${artifact.id}/zip`, { redirect: "follow" });
+  if (!downloadRes.ok) {
+    const body = await downloadRes.text();
+    throw new Error(`GitHub artifact download ${downloadRes.status}: ${body}`);
+  }
+
+  const record = await extractJsonFromZip(await downloadRes.arrayBuffer());
+  if (record && typeof record === "object") {
+    record.artifact_name = artifact.name || null;
+    const requestId = String(artifact.name || "").startsWith("fal-result-")
+      ? String(artifact.name).slice("fal-result-".length)
+      : null;
+    if (requestId) record.request_id = requestId;
+  }
+  return record;
+}
+
+export async function listRecentActionResults(limit = 10) {
+  const artifactsRes = await githubFetch("/actions/artifacts?per_page=100");
+  if (!artifactsRes.ok) {
+    const body = await artifactsRes.text();
+    throw new Error(`GitHub artifacts API ${artifactsRes.status}: ${body}`);
+  }
+
+  const payload = await artifactsRes.json();
+  const artifacts = (Array.isArray(payload?.artifacts) ? payload.artifacts : [])
+    .filter((item) => String(item?.name || "").startsWith("fal-result-") && !item?.expired)
+    .sort((a, b) => Date.parse(b?.created_at || "") - Date.parse(a?.created_at || ""))
+    .slice(0, limit);
+
+  const records = [];
+  for (const artifact of artifacts) {
+    try {
+      const record = await fetchActionResultFromArtifact(artifact);
+      if (record) records.push(record);
+    } catch (_) {
+      // Skip unreadable artifacts so one failure does not block gallery sync.
+    }
+  }
+  return records;
 }
 
 function formatFileTimestamp(timestamp) {

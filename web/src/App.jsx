@@ -6,6 +6,7 @@ import {
   hasApiKey,
   dispatchGenerate,
   fetchActionResult,
+  listRecentActionResults,
   getGhToken,
   setGhToken,
   getGhRepo,
@@ -111,6 +112,12 @@ function readStudioStateRaw() {
     console.error("Failed to parse fal_studio_state:", error);
     return null;
   }
+}
+
+function historyRecordKey(item) {
+  if (item?.artifact_name) return `artifact:${item.artifact_name}`;
+  if (item?.request_id) return `request:${item.request_id}`;
+  return `fallback:${item?.timestamp || ""}:${item?.model || ""}:${item?.prompt || ""}`;
 }
 
 function normalizeHistoryEntries(items, source) {
@@ -1336,6 +1343,56 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function syncRecentArtifacts() {
+      if (!hasGhConfig()) return;
+      try {
+        const records = await listRecentActionResults(8);
+        if (cancelled || records.length === 0) return;
+
+        const history = readLocalHistoryRaw();
+        const merged = [...history];
+        const existingKeys = new Set(history.map((item) => historyRecordKey(item)));
+
+        for (const record of records.reverse()) {
+          const imageUrls = extractOutputImages(record);
+          if (imageUrls.length === 0) continue;
+
+          const entry = {
+            model: record.model,
+            prompt: record.prompt,
+            inputImages: record.input_images,
+            imageUrls,
+            timestamp: record.timestamp,
+            result: record.result,
+            cardState: record.card_state,
+            artifact_name: record.artifact_name || null,
+            request_id: record.request_id || null,
+          };
+          const key = historyRecordKey(entry);
+          if (existingKeys.has(key)) continue;
+          existingKeys.add(key);
+          merged.unshift(entry);
+        }
+
+        if (!cancelled && merged.length !== history.length) {
+          if (merged.length > 100) merged.length = 100;
+          localStorage.setItem("fal_history", JSON.stringify(merged));
+          setLocalHistoryEntries(normalizeHistoryEntries(merged, "local"));
+        }
+      } catch (error) {
+        console.error("Failed to sync Actions artifacts:", error);
+      }
+    }
+
+    syncRecentArtifacts();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!cards.length) {
       setGalleryTargetCardId(null);
       return;
@@ -1388,7 +1445,7 @@ export default function App() {
 
   const saveToHistory = useCallback((record, imageUrls) => {
     const history = readLocalHistoryRaw();
-    history.unshift({
+    const nextEntry = {
       model: record.model,
       prompt: record.prompt,
       inputImages: record.input_images,
@@ -1396,10 +1453,15 @@ export default function App() {
       timestamp: record.timestamp,
       result: record.result,
       cardState: record.card_state,
-    });
-    if (history.length > 100) history.length = 100;
-    localStorage.setItem("fal_history", JSON.stringify(history));
-    setLocalHistoryEntries(normalizeHistoryEntries(history, "local"));
+      artifact_name: record.artifact_name || null,
+      request_id: record.request_id || null,
+    };
+    const nextKey = historyRecordKey(nextEntry);
+    const filtered = history.filter((item) => historyRecordKey(item) !== nextKey);
+    filtered.unshift(nextEntry);
+    if (filtered.length > 100) filtered.length = 100;
+    localStorage.setItem("fal_history", JSON.stringify(filtered));
+    setLocalHistoryEntries(normalizeHistoryEntries(filtered, "local"));
   }, []);
 
   const addImageToCard = useCallback((cardId, src) => {
