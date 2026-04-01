@@ -14,10 +14,14 @@ on:
           - clarity-upscaler
       prompt:
         description: "Text prompt"
-        required: true
+        required: false
         type: string
       image_url:
         description: "Input image URL (optional)"
+        required: false
+        type: string
+      card_state_b64:
+        description: "Base64-encoded card snapshot from the web UI"
         required: false
         type: string
 
@@ -43,8 +47,11 @@ jobs:
           INPUT_MODEL: ${{ inputs.model }}
           INPUT_PROMPT: ${{ inputs.prompt }}
           INPUT_IMAGE_URL: ${{ inputs.image_url }}
+          INPUT_CARD_STATE_B64: ${{ inputs.card_state_b64 }}
         run: |
-          if [ -n "$INPUT_IMAGE_URL" ]; then
+          if [ -n "$INPUT_CARD_STATE_B64" ]; then
+            uv run fal-studio run "$INPUT_MODEL" --card-state-b64 "$INPUT_CARD_STATE_B64"
+          elif [ -n "$INPUT_IMAGE_URL" ]; then
             uv run fal-studio run "$INPUT_MODEL" -p "$INPUT_PROMPT" -i "$INPUT_IMAGE_URL"
           else
             uv run fal-studio run "$INPUT_MODEL" -p "$INPUT_PROMPT"

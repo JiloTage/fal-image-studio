@@ -41,6 +41,19 @@ export function hasGhConfig() {
   return !!getGhToken() && !!getGhRepo();
 }
 
+function encodeBase64JSON(value) {
+  if (!value) return "";
+  const json = JSON.stringify(value);
+  const bytes = new TextEncoder().encode(json);
+  let binary = "";
+
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+
+  return btoa(binary);
+}
+
 // ─── fal.ai direct API ───
 
 function ensureConfig() {
@@ -69,7 +82,7 @@ export async function runModel(endpoint, input, onProgress) {
 
 // ─── GitHub Actions dispatch ───
 
-export async function dispatchGenerate({ model, prompt, imageUrl }) {
+export async function dispatchGenerate({ model, prompt, imageUrl, cardState }) {
   const token = getGhToken();
   const repo = getGhRepo();
   if (!token || !repo) throw new Error("GitHub PAT and repo not configured");
@@ -88,6 +101,7 @@ export async function dispatchGenerate({ model, prompt, imageUrl }) {
           model,
           prompt,
           image_url: imageUrl || "",
+          card_state_b64: encodeBase64JSON(cardState),
         },
       }),
     }

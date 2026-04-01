@@ -71,6 +71,7 @@ async function buildManifest() {
         : Array.isArray(parsed?.inputImages)
           ? parsed.inputImages
           : [],
+      cardState: parsed?.card_state ?? parsed?.cardState ?? null,
       imageUrls: extractImages(parsed),
     });
   }

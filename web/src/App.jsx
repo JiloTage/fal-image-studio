@@ -20,6 +20,7 @@ import {
 let _id = 0;
 const uid = () => `c${++_id}`;
 let dragPayload = null;
+const STUDIO_STATE_KEY = "fal_studio_state";
 
 function defaultParams(modelId) {
   const model = AI_MODELS.find((m) => m.id === modelId);
@@ -65,11 +66,31 @@ function readLocalHistoryRaw() {
   }
 }
 
+function readStudioStateRaw() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STUDIO_STATE_KEY) || "null");
+    return saved && typeof saved === "object" ? saved : null;
+  } catch (error) {
+    console.error("Failed to parse fal_studio_state:", error);
+    return null;
+  }
+}
+
 function normalizeHistoryEntries(items, source) {
   return items
     .map((item, index) => {
       const timestamp = item?.timestamp || "";
       const imageUrls = extractOutputImages(item);
+      const cardState = normalizeCardState(item?.card_state ?? item?.cardState, {
+        model: item?.model,
+        prompt: item?.prompt,
+        inputImages: Array.isArray(item?.input_images)
+          ? item.input_images
+          : Array.isArray(item?.inputImages)
+            ? item.inputImages
+            : [],
+        params: item?.params,
+      });
 
       return {
         id: item?.id || `${source}-${item?.filename || index}-${timestamp || index}`,
@@ -85,6 +106,7 @@ function normalizeHistoryEntries(items, source) {
             ? item.inputImages.filter(Boolean)
             : [],
         result: item?.result ?? item?.raw ?? null,
+        cardState,
       };
     })
     .filter((item) => item.imageUrls.length > 0 || item.prompt || item.model !== "unknown");
@@ -102,6 +124,172 @@ function formatTimestamp(timestamp) {
   if (!timestamp) return "Unknown time";
   const date = new Date(timestamp);
   return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleString();
+}
+
+function createCard(modelId, overrides = {}) {
+  const params = {
+    ...defaultParams(modelId),
+    ...(overrides.params || {}),
+  };
+
+  return {
+    id: uid(),
+    model: modelId,
+    prompt: "",
+    inputImages: [],
+    outputs: [],
+    status: "idle",
+    error: null,
+    pos: { x: 60, y: 40 },
+    ...overrides,
+    params,
+  };
+}
+
+function getDefaultStudioCards() {
+  return [
+    createCard("reve", { pos: { x: 60, y: 40 } }),
+    createCard("clarity-upscaler", { pos: { x: 440, y: 40 } }),
+  ];
+}
+
+function normalizeCardState(cardState, fallback = null) {
+  const raw = cardState && typeof cardState === "object" ? cardState : {};
+  const base = fallback && typeof fallback === "object" ? fallback : {};
+  const fallbackModel = typeof base.model === "string" && getModelMeta(base.model) ? base.model : null;
+  const modelId = typeof raw.model === "string" && getModelMeta(raw.model)
+    ? raw.model
+    : fallbackModel || AI_MODELS[0]?.id || null;
+
+  if (!modelId) return null;
+
+  const inputImages = Array.isArray(raw.inputImages)
+    ? raw.inputImages
+    : Array.isArray(raw.input_images)
+      ? raw.input_images
+      : Array.isArray(base.inputImages)
+        ? base.inputImages
+        : Array.isArray(base.input_images)
+          ? base.input_images
+          : [];
+  const params = raw.params && typeof raw.params === "object"
+    ? raw.params
+    : base.params && typeof base.params === "object"
+      ? base.params
+      : {};
+  const position = raw.pos && typeof raw.pos === "object"
+    ? raw.pos
+    : base.pos && typeof base.pos === "object"
+      ? base.pos
+      : null;
+  const numericIndex = Number(raw.index ?? raw.cardIndex ?? base.index ?? base.cardIndex);
+  const index = Number.isFinite(numericIndex) && numericIndex > 0 ? numericIndex : null;
+
+  return {
+    version: Number(raw.version) || 1,
+    index,
+    model: modelId,
+    prompt: typeof raw.prompt === "string"
+      ? raw.prompt
+      : typeof base.prompt === "string"
+        ? base.prompt
+        : "",
+    inputImages: [...new Set(inputImages.filter(Boolean))],
+    params: {
+      ...defaultParams(modelId),
+      ...params,
+    },
+    pos: position && Number.isFinite(position.x) && Number.isFinite(position.y)
+      ? { x: position.x, y: position.y }
+      : null,
+  };
+}
+
+function buildCardState(card, index) {
+  return normalizeCardState({
+    version: 1,
+    index: index + 1,
+    model: card.model,
+    prompt: card.prompt,
+    inputImages: card.inputImages,
+    params: card.params,
+    pos: card.pos,
+  });
+}
+
+function applyCardState(card, cardState, imageUrls = []) {
+  const normalized = normalizeCardState(cardState, card);
+  if (!normalized) return card;
+
+  return {
+    ...card,
+    model: normalized.model,
+    prompt: normalized.prompt,
+    inputImages: [...normalized.inputImages],
+    params: { ...normalized.params },
+    pos: normalized.pos ? { ...normalized.pos } : card.pos,
+    outputs: [...new Set((imageUrls || []).filter(Boolean))],
+    status: imageUrls.length > 0 ? "done" : "idle",
+    error: null,
+  };
+}
+
+function syncUidCounter(cards) {
+  const maxId = cards.reduce((max, card) => {
+    const match = /^c(\d+)$/.exec(card.id || "");
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  _id = Math.max(_id, maxId);
+}
+
+function loadStudioState() {
+  const raw = readStudioStateRaw();
+  if (!raw) return null;
+
+  const cards = Array.isArray(raw.cards)
+    ? raw.cards
+      .map((item, index) => {
+        const normalized = normalizeCardState(item, item);
+        if (!normalized) return null;
+
+        return {
+          id: typeof item?.id === "string" && item.id ? item.id : `c${index + 1}`,
+          model: normalized.model,
+          prompt: normalized.prompt,
+          inputImages: normalized.inputImages,
+          outputs: Array.isArray(item?.outputs) ? item.outputs.filter(Boolean) : [],
+          status: item?.status === "done" ? "done" : "idle",
+          error: typeof item?.error === "string" ? item.error : null,
+          params: normalized.params,
+          pos: normalized.pos || { x: 60 + index * 120, y: 40 },
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  if (!cards.length) return null;
+
+  syncUidCounter(cards);
+
+  const validIds = new Set(cards.map((card) => card.id));
+  const seenConnections = new Set();
+  const connections = Array.isArray(raw.connections)
+    ? raw.connections.filter((connection) => {
+        if (!connection || !validIds.has(connection.from) || !validIds.has(connection.to)) return false;
+        const key = `${connection.from}->${connection.to}`;
+        if (seenConnections.has(key)) return false;
+        seenConnections.add(key);
+        return true;
+      })
+    : [];
+  const galleryTargetCardId = validIds.has(raw.galleryTargetCardId) ? raw.galleryTargetCardId : cards[0].id;
+
+  return {
+    cards,
+    connections,
+    galleryOpen: typeof raw.galleryOpen === "boolean" ? raw.galleryOpen : true,
+    galleryTargetCardId,
+  };
 }
 
 function ImageThumb({ src, size = 52, onRemove, draggable, cardId, onClick, title }) {
@@ -789,6 +977,7 @@ function HistoryPanel({
   targetCardId,
   onTargetCardChange,
   onUseImage,
+  onRestoreEntry,
 }) {
   const targetCard = cards.find((card) => card.id === targetCardId) || null;
 
@@ -933,6 +1122,28 @@ function HistoryPanel({
                         {entry.source}
                       </span>
                     </div>
+                    {entry.cardState && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        {entry.cardState.index && (
+                          <span
+                            style={{
+                              fontSize: 10,
+                              color: C.green,
+                              background: `${C.green}16`,
+                              border: `1px solid ${C.green}33`,
+                              borderRadius: 999,
+                              padding: "3px 8px",
+                            }}
+                          >
+                            Card {entry.cardState.index}
+                          </span>
+                        )}
+                        <span style={{ fontSize: 10, color: C.textFaint }}>
+                          {entry.cardState.inputImages.length} input
+                          {entry.cardState.inputImages.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                    )}
                     <div style={{ fontSize: 11, color: C.textMuted }}>{formatTimestamp(entry.timestamp)}</div>
                     <div
                       style={{
@@ -956,6 +1167,23 @@ function HistoryPanel({
                         />
                       ))}
                     </div>
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => onRestoreEntry(targetCardId, entry)}
+                        disabled={!targetCardId || !entry.cardState}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 6,
+                          border: `1px solid ${C.border}`,
+                          background: !targetCardId || !entry.cardState ? C.bg : C.surface,
+                          color: !targetCardId || !entry.cardState ? C.textFaint : C.text,
+                          fontSize: 11,
+                          cursor: !targetCardId || !entry.cardState ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        Restore To Selected
+                      </button>
+                    </div>
                   </article>
                 );
               })}
@@ -968,39 +1196,18 @@ function HistoryPanel({
 }
 
 export default function App() {
+  const initialStudioStateRef = useRef(loadStudioState());
+  const initialStudioState = initialStudioStateRef.current;
   const [showSettings, setShowSettings] = useState(!hasApiKey() && !hasGhConfig());
-  const [cards, setCards] = useState([
-    {
-      id: uid(),
-      model: "reve",
-      prompt: "",
-      inputImages: [],
-      outputs: [],
-      status: "idle",
-      error: null,
-      params: defaultParams("reve"),
-      pos: { x: 60, y: 40 },
-    },
-    {
-      id: uid(),
-      model: "clarity-upscaler",
-      prompt: "",
-      inputImages: [],
-      outputs: [],
-      status: "idle",
-      error: null,
-      params: defaultParams("clarity-upscaler"),
-      pos: { x: 440, y: 40 },
-    },
-  ]);
-  const [connections, setConnections] = useState([]);
+  const [cards, setCards] = useState(initialStudioState?.cards || getDefaultStudioCards());
+  const [connections, setConnections] = useState(initialStudioState?.connections || []);
   const [connectFrom, setConnectFrom] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [linesTick, setLinesTick] = useState(0);
-  const [galleryOpen, setGalleryOpen] = useState(true);
+  const [galleryOpen, setGalleryOpen] = useState(initialStudioState?.galleryOpen ?? true);
   const [localHistoryEntries, setLocalHistoryEntries] = useState([]);
   const [repoHistoryEntries, setRepoHistoryEntries] = useState([]);
-  const [galleryTargetCardId, setGalleryTargetCardId] = useState(null);
+  const [galleryTargetCardId, setGalleryTargetCardId] = useState(initialStudioState?.galleryTargetCardId || null);
   const cardRefs = useRef({});
   const canvasRef = useRef(null);
 
@@ -1055,6 +1262,29 @@ export default function App() {
     }
   }, [cards, galleryTargetCardId]);
 
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      localStorage.setItem(STUDIO_STATE_KEY, JSON.stringify({
+        cards: cards.map((card) => ({
+          id: card.id,
+          model: card.model,
+          prompt: card.prompt,
+          inputImages: card.inputImages,
+          outputs: card.outputs,
+          status: card.status,
+          error: card.error,
+          params: card.params,
+          pos: card.pos,
+        })),
+        connections,
+        galleryOpen,
+        galleryTargetCardId,
+      }));
+    }, 120);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [cards, connections, galleryOpen, galleryTargetCardId]);
+
   const updateCard = useCallback((updated) => {
     setCards((prev) => prev.map((card) => (card.id === updated.id ? updated : card)));
   }, []);
@@ -1066,17 +1296,9 @@ export default function App() {
 
   const addCard = useCallback(() => {
     const modelId = AI_MODELS[Math.floor(Math.random() * AI_MODELS.length)].id;
-    const newCard = {
-      id: uid(),
-      model: modelId,
-      prompt: "",
-      inputImages: [],
-      outputs: [],
-      status: "idle",
-      error: null,
-      params: defaultParams(modelId),
+    const newCard = createCard(modelId, {
       pos: { x: 60 + cards.length * 120, y: 40 },
-    };
+    });
     setCards((prev) => [...prev, newCard]);
     setGalleryTargetCardId(newCard.id);
   }, [cards.length]);
@@ -1090,6 +1312,7 @@ export default function App() {
       imageUrls,
       timestamp: record.timestamp,
       result: record.result,
+      cardState: record.card_state,
     });
     if (history.length > 100) history.length = 100;
     localStorage.setItem("fal_history", JSON.stringify(history));
@@ -1115,7 +1338,7 @@ export default function App() {
     }
   }, []);
 
-  const startPolling = useCallback((cardId, prevCount) => {
+  const startPolling = useCallback((cardId, prevCount, fallbackCardState) => {
     stopPolling();
     let attempts = 0;
     const maxAttempts = 40; // ~10 minutes at 15s interval
@@ -1129,7 +1352,9 @@ export default function App() {
           const images = extractOutputImages(latest);
           if (images.length > 0) {
             setCards((prev) => prev.map((c) =>
-              c.id === cardId ? { ...c, status: "done", outputs: images, error: null } : c
+              c.id === cardId
+                ? applyCardState(c, latest?.cardState || latest?.card_state || fallbackCardState, images)
+                : c
             ));
             manifestCountRef.current = manifest.length;
             setRepoHistoryEntries(normalizeHistoryEntries(manifest, "repo"));
@@ -1155,6 +1380,8 @@ export default function App() {
 
     const card = cards.find((item) => item.id === cardId);
     if (!card) return;
+    const cardIndex = cards.findIndex((item) => item.id === cardId);
+    const cardState = buildCardState(card, cardIndex);
 
     const model = getModelMeta(card.model);
     if (!model) return;
@@ -1190,10 +1417,11 @@ export default function App() {
           input_images: [...card.inputImages],
           timestamp,
           result,
+          card_state: cardState,
         };
 
         setCards((prev) => prev.map((item) => (
-          item.id === cardId ? { ...item, status: "done", outputs: images, error: null } : item
+          item.id === cardId ? applyCardState(item, cardState, images) : item
         )));
 
         downloadResultJSON(record);
@@ -1223,9 +1451,10 @@ export default function App() {
         model: card.model,
         prompt: card.prompt.trim(),
         imageUrl: card.inputImages[0] || "",
+        cardState,
       });
       // Start polling for result
-      startPolling(cardId, manifestCountRef.current);
+      startPolling(cardId, manifestCountRef.current, cardState);
     } catch (error) {
       setCards((prev) => prev.map((item) => (
         item.id === cardId
@@ -1234,6 +1463,16 @@ export default function App() {
       )));
     }
   }, [cards, saveToHistory, startPolling]);
+
+  const restoreHistoryEntry = useCallback((cardId, entry) => {
+    const cardState = normalizeCardState(entry?.cardState, entry);
+    if (!cardId || !cardState) return;
+    setCards((prev) => prev.map((card) => (
+      card.id === cardId ? applyCardState(card, cardState, entry?.imageUrls || []) : card
+    )));
+    setGalleryTargetCardId(cardId);
+    setLinesTick((value) => value + 1);
+  }, []);
 
   const handleStartConnect = useCallback((cardId) => {
     if (connectFrom && connectFrom !== cardId) {
@@ -1580,6 +1819,7 @@ export default function App() {
           targetCardId={galleryTargetCardId}
           onTargetCardChange={setGalleryTargetCardId}
           onUseImage={addImageToCard}
+          onRestoreEntry={restoreHistoryEntry}
         />
       </div>
     </div>

@@ -31,13 +31,16 @@ def _resolve_image(image: str) -> str:
 
 def run_model(
     model: ModelName,
-    prompt: str,
+    prompt: str | None = None,
     images: list[str] | None = None,
     extra_params: dict | None = None,
 ) -> dict:
     """Run a fal.ai model and return the raw result dict."""
     config = MODELS[model]
-    arguments: dict = {"prompt": prompt}
+    arguments: dict = {}
+
+    if prompt:
+        arguments["prompt"] = prompt
 
     if images:
         resolved = [_resolve_image(img) for img in images]
