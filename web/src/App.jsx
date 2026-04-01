@@ -50,6 +50,26 @@ function defaultParams(modelId) {
   return params;
 }
 
+function sanitizeParamsForModel(modelId, rawParams) {
+  const model = getModelMeta(modelId);
+  const allowedKeys = new Set((model?.params || []).map((def) => def.key));
+  const params = {};
+
+  for (const def of model?.params || []) {
+    if (rawParams && Object.prototype.hasOwnProperty.call(rawParams, def.key)) {
+      params[def.key] = rawParams[def.key];
+    } else {
+      params[def.key] = def.default;
+    }
+  }
+
+  for (const key of Object.keys(params)) {
+    if (!allowedKeys.has(key)) delete params[key];
+  }
+
+  return params;
+}
+
 function getModelMeta(modelId) {
   return AI_MODELS.find((model) => model.id === modelId);
 }
@@ -144,10 +164,7 @@ function formatTimestamp(timestamp) {
 }
 
 function createCard(modelId, overrides = {}) {
-  const params = {
-    ...defaultParams(modelId),
-    ...(overrides.params || {}),
-  };
+  const params = sanitizeParamsForModel(modelId, overrides.params || {});
 
   return {
     id: uid(),
@@ -212,10 +229,7 @@ function normalizeCardState(cardState, fallback = null) {
         ? base.prompt
         : "",
     inputImages: [...new Set(inputImages.filter(Boolean))],
-    params: {
-      ...defaultParams(modelId),
-      ...params,
-    },
+    params: sanitizeParamsForModel(modelId, params),
     pos: position && Number.isFinite(position.x) && Number.isFinite(position.y)
       ? { x: position.x, y: position.y }
       : null,
@@ -1468,11 +1482,10 @@ export default function App() {
         }
       }
 
-      // Send model-specific params (skip seed if -1)
+      // Send model-specific params
       if (model.params) {
         for (const def of model.params) {
           const val = card.params[def.key] ?? def.default;
-          if (def.key === "seed" && val < 0) continue;
           if (val !== undefined) input[def.key] = val;
         }
       }

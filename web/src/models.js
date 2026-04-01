@@ -22,7 +22,6 @@ export const AI_MODELS = [
     params: [
       { key: "num_images", label: "Images", type: "slider", min: 1, max: 4, step: 1, default: 1 },
       { key: "image_size", label: "Size", type: "select", options: ["auto_2K", "auto_4K", "square_hd", "square", "portrait_4_3", "landscape_4_3"], default: "auto_2K" },
-      { key: "seed", label: "Seed", type: "number", default: -1 },
       { key: "enable_safety_checker", label: "Safety", type: "bool", default: false },
     ],
   },
@@ -37,7 +36,6 @@ export const AI_MODELS = [
       { key: "num_images", label: "Images", type: "slider", min: 1, max: 4, step: 1, default: 1 },
       { key: "resolution", label: "Resolution", type: "select", options: ["0.5K", "1K", "2K", "4K"], default: "1K" },
       { key: "aspect_ratio", label: "Aspect", type: "select", options: ["auto", "1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3"], default: "auto" },
-      { key: "seed", label: "Seed", type: "number", default: -1 },
     ],
   },
   {
@@ -53,7 +51,6 @@ export const AI_MODELS = [
       { key: "resemblance", label: "Resemblance", type: "slider", min: 0, max: 1, step: 0.05, default: 0.6 },
       { key: "guidance_scale", label: "CFG", type: "slider", min: 0, max: 20, step: 0.5, default: 4 },
       { key: "num_inference_steps", label: "Steps", type: "slider", min: 4, max: 50, step: 1, default: 18 },
-      { key: "seed", label: "Seed", type: "number", default: -1 },
       { key: "enable_safety_checker", label: "Safety", type: "bool", default: false },
     ],
   },

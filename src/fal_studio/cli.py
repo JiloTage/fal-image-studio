@@ -45,6 +45,15 @@ def _coerce_param_value(value: str):
             return value
 
 
+def _normalize_extra_params(params: dict) -> dict:
+    normalized = {}
+    for key, value in params.items():
+        if key == "seed":
+            continue
+        normalized[key] = value
+    return normalized
+
+
 def _save_result(
     model: str,
     prompt: str,
@@ -119,6 +128,8 @@ def run(model: str, prompt: str, images: tuple, no_save: bool, extra: tuple, car
             sys.exit(1)
         key, value = kv.split("=", 1)
         extra_params[key] = _coerce_param_value(value)
+
+    extra_params = _normalize_extra_params(extra_params)
 
     if not resolved_prompt and not resolved_images:
         click.echo("Error: prompt or image input is required.", err=True)
