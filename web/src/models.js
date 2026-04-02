@@ -1,5 +1,17 @@
 import { C } from "./theme";
 
+const DEFAULT_ILLUSTRIOUS_NEGATIVE_PROMPT = [
+  "worst quality",
+  "low quality",
+  "blurry",
+  "jpeg artifacts",
+  "bad anatomy",
+  "bad hands",
+  "extra digits",
+  "fewer digits",
+  "deformed",
+].join(", ");
+
 export const AI_MODELS = [
   {
     id: "reve",
@@ -82,6 +94,7 @@ export const AI_MODELS = [
     requiresPrompt: true,
     baseInput: {
       model_name: "Bercraft/Illustrious-XL-v2.0-Stable-FP16-Diffusers",
+      negative_prompt: DEFAULT_ILLUSTRIOUS_NEGATIVE_PROMPT,
     },
     params: [
       { key: "image_size", label: "Size", type: "select", options: ["square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9"], default: "portrait_4_3" },

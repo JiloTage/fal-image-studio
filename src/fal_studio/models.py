@@ -3,6 +3,11 @@ from typing import Literal
 
 ModelName = Literal["reve", "seedream", "nano-banana2", "clarity-upscaler", "illustrious"]
 
+DEFAULT_ILLUSTRIOUS_NEGATIVE_PROMPT = (
+    "worst quality, low quality, blurry, jpeg artifacts, "
+    "bad anatomy, bad hands, extra digits, fewer digits, deformed"
+)
+
 @dataclass
 class ModelConfig:
     text_endpoint: str | None
@@ -56,7 +61,10 @@ MODELS: dict[str, ModelConfig] = {
         image_param="image_url",
         supports_images=True,
         requires_prompt=True,
-        base_arguments={"model_name": "Bercraft/Illustrious-XL-v2.0-Stable-FP16-Diffusers"},
+        base_arguments={
+            "model_name": "Bercraft/Illustrious-XL-v2.0-Stable-FP16-Diffusers",
+            "negative_prompt": DEFAULT_ILLUSTRIOUS_NEGATIVE_PROMPT,
+        },
         description="Illustrious XL with automatic text-to-image or image-to-image routing",
     ),
 }
