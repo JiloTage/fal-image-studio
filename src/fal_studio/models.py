@@ -56,7 +56,7 @@ MODELS: dict[str, ModelConfig] = {
         image_param="image_url",
         supports_images=True,
         requires_prompt=True,
-        base_arguments={"model_name": "OnomaAIResearch/Illustrious-XL-v2.0"},
+        base_arguments={"model_name": "Bercraft/Illustrious-XL-v2.0-Stable-FP16-Diffusers"},
         description="Illustrious XL with automatic text-to-image or image-to-image routing",
     ),
 }
