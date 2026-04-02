@@ -13,6 +13,7 @@ on:
           - seedream
           - nano-banana2
           - clarity-upscaler
+          - illustrious
       prompt:
         description: "Text prompt"
         required: false

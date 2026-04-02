@@ -76,6 +76,69 @@ function getModelMeta(modelId) {
   return AI_MODELS.find((model) => model.id === modelId);
 }
 
+function modelSupportsImages(modelId) {
+  return getModelMeta(modelId)?.supportsImages !== false;
+}
+
+function buildSingleLora(params) {
+  const loraPath = String(params?.lora_path || "").trim();
+  if (!loraPath) return null;
+
+  const numericScale = Number(params?.lora_scale);
+  return [{
+    path: loraPath,
+    scale: Number.isFinite(numericScale) ? numericScale : 0.8,
+  }];
+}
+
+function buildModelInput(card, model) {
+  const input = { ...(model?.baseInput || {}) };
+  const prompt = card.prompt.trim();
+
+  if (prompt) input.prompt = prompt;
+
+  if (model?.supportsImages !== false && card.inputImages.length > 0) {
+    if (model.imageParam === "image_urls") {
+      input.image_urls = card.inputImages;
+    } else if (model.imageParam === "image_url") {
+      input.image_url = card.inputImages[0];
+    }
+  }
+
+  if (model?.params) {
+    for (const def of model.params) {
+      if (def.key === "lora_path" || def.key === "lora_scale") continue;
+      const val = card.params[def.key] ?? def.default;
+      if (val !== undefined) input[def.key] = val;
+    }
+  }
+
+  const loras = buildSingleLora(card.params || {});
+  if (loras) input.loras = loras;
+
+  return input;
+}
+
+function resolveModelEndpoint(card, model) {
+  if (model?.supportsImages !== false && card.inputImages.length > 0 && model?.imageEndpoint) {
+    return model.imageEndpoint;
+  }
+  if (model?.textEndpoint) return model.textEndpoint;
+  if (model?.imageEndpoint) return model.imageEndpoint;
+  return null;
+}
+
+function canGenerateCard(card, model) {
+  const prompt = card.prompt.trim();
+  const hasImages = card.inputImages.length > 0;
+  const needsPrompt = model?.requiresPrompt !== false;
+
+  if (needsPrompt && prompt.length === 0) return false;
+  if (hasImages && model?.imageEndpoint) return true;
+  if (!hasImages && model?.textEndpoint) return true;
+  return false;
+}
+
 function extractOutputImages(source) {
   const urls = [];
   const rawResult = source?.result && typeof source.result === "object" ? source.result : source;
@@ -234,6 +297,9 @@ function normalizeCardState(cardState, fallback = null) {
         : Array.isArray(base.input_images)
           ? base.input_images
           : [];
+  const normalizedInputImages = modelSupportsImages(modelId)
+    ? [...new Set(inputImages.filter(Boolean))]
+    : [];
   const params = raw.params && typeof raw.params === "object"
     ? raw.params
     : base.params && typeof base.params === "object"
@@ -256,7 +322,7 @@ function normalizeCardState(cardState, fallback = null) {
       : typeof base.prompt === "string"
         ? base.prompt
         : "",
-    inputImages: [...new Set(inputImages.filter(Boolean))],
+    inputImages: normalizedInputImages,
     params: sanitizeParamsForModel(modelId, params),
     pos: position && Number.isFinite(position.x) && Number.isFinite(position.y)
       ? { x: position.x, y: position.y }
@@ -634,6 +700,20 @@ function ParamsPanel({ params, onChange, modelId }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "2px 0 8px", animation: "fadeIn 0.15s ease" }}>
           {paramDefs.map((def) => {
             const val = params[def.key] ?? def.default;
+            if (def.type === "text") {
+              return (
+                <div key={def.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <label style={{ fontSize: 11, color: C.textMuted, width: 80, flexShrink: 0 }}>{def.label}</label>
+                  <input
+                    type="text"
+                    value={val}
+                    placeholder={def.placeholder || ""}
+                    onChange={(e) => update(def.key, e.target.value)}
+                    style={{ flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 4, padding: "3px 6px", color: C.text, fontSize: 11 }}
+                  />
+                </div>
+              );
+            }
             if (def.type === "slider") {
               return (
                 <div key={def.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -696,20 +776,25 @@ function GenCard({
   totalCards,
 }) {
   const isGenerating = card.status === "generating";
+  const model = getModelMeta(card.model);
+  const supportsImages = model?.supportsImages !== false;
+  const canGenerate = canGenerateCard(card, model);
 
   const handleDropInput = useCallback((payload) => {
+    if (!supportsImages) return;
     if (!card.inputImages.includes(payload.src)) {
       onUpdate({ ...card, inputImages: [...card.inputImages, payload.src] });
       if (payload.fromCard && payload.fromCard !== card.id) {
         onAutoConnect(payload.fromCard, card.id);
       }
     }
-  }, [card, onUpdate, onAutoConnect]);
+  }, [card, onUpdate, onAutoConnect, supportsImages]);
 
   const handleUrlDrop = useCallback((url) => {
+    if (!supportsImages) return;
     if (!url || card.inputImages.includes(url)) return;
     onUpdate({ ...card, inputImages: [...card.inputImages, url], error: null });
-  }, [card, onUpdate]);
+  }, [card, onUpdate, supportsImages]);
 
   return (
     <div
@@ -762,7 +847,15 @@ function GenCard({
           {"\u2807"}
         </div>
         <div data-nodrag="true" style={{ flex: 1 }}>
-          <ModelSelector selected={card.model} onSelect={(id) => onUpdate({ ...card, model: id, params: defaultParams(id) })} />
+          <ModelSelector
+            selected={card.model}
+            onSelect={(id) => onUpdate({
+              ...card,
+              model: id,
+              params: defaultParams(id),
+              inputImages: modelSupportsImages(id) ? card.inputImages : [],
+            })}
+          />
         </div>
         {totalCards > 1 && (
           <button
@@ -807,45 +900,47 @@ function GenCard({
           onBlur={(e) => { e.target.style.borderColor = C.border; }}
         />
 
-        <div>
-          <div
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              color: C.textFaint,
-              marginBottom: 3,
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-            }}
-          >
-            Input
-          </div>
-          {!hasApiKey() && hasGhConfig() && (
-            <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 6, lineHeight: 1.4 }}>
-              Drag an online image here, or click to paste its URL.
+        {supportsImages && (
+          <div>
+            <div
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: C.textFaint,
+                marginBottom: 3,
+                textTransform: "uppercase",
+                letterSpacing: "0.06em",
+              }}
+            >
+              Input
             </div>
-          )}
-          <DropZone onDrop={handleDropInput} onUrlDrop={handleUrlDrop} label="Drop a web image or click to paste URL">
-            {card.inputImages.map((src, index) => (
-              <ImageThumb
-                key={`${src}-${index}`}
-                src={src}
-                size={44}
-                onRemove={() => {
-                  const next = [...card.inputImages];
-                  next.splice(index, 1);
-                  onUpdate({ ...card, inputImages: next });
-                }}
-              />
-            ))}
-          </DropZone>
-        </div>
+            {!hasApiKey() && hasGhConfig() && (
+              <div style={{ fontSize: 10, color: C.textFaint, marginBottom: 6, lineHeight: 1.4 }}>
+                Drag an online image here, or click to paste its URL.
+              </div>
+            )}
+            <DropZone onDrop={handleDropInput} onUrlDrop={handleUrlDrop} label="Drop a web image or click to paste URL">
+              {card.inputImages.map((src, index) => (
+                <ImageThumb
+                  key={`${src}-${index}`}
+                  src={src}
+                  size={44}
+                  onRemove={() => {
+                    const next = [...card.inputImages];
+                    next.splice(index, 1);
+                    onUpdate({ ...card, inputImages: next });
+                  }}
+                />
+              ))}
+            </DropZone>
+          </div>
+        )}
 
         <ParamsPanel params={card.params} onChange={(params) => onUpdate({ ...card, params })} modelId={card.model} />
 
         <button
           onClick={() => onGenerate(card.id)}
-          disabled={isGenerating || (!card.prompt.trim() && card.inputImages.length === 0)}
+          disabled={isGenerating || !canGenerate}
           style={{
             padding: "7px 0",
             borderRadius: 6,
@@ -856,7 +951,7 @@ function GenCard({
             fontSize: 12,
             cursor: isGenerating ? "wait" : "pointer",
             transition: "background 0.15s",
-            opacity: (!card.prompt.trim() && card.inputImages.length === 0) ? 0.4 : 1,
+            opacity: canGenerate ? 1 : 0.4,
           }}
           onMouseEnter={(e) => { if (!isGenerating) e.currentTarget.style.background = C.greenHover; }}
           onMouseLeave={(e) => { if (!isGenerating) e.currentTarget.style.background = C.green; }}
@@ -1274,7 +1369,13 @@ function HistoryPanel({
                           src={src}
                           size={68}
                           draggable
-                          title={targetCard ? `Click to add to ${getModelMeta(targetCard.model)?.name || targetCard.model}` : "Drag to a card input"}
+                          title={
+                            targetCard
+                              ? modelSupportsImages(targetCard.model)
+                                ? `Click to add to ${getModelMeta(targetCard.model)?.name || targetCard.model}`
+                                : `${getModelMeta(targetCard.model)?.name || targetCard.model} does not accept image inputs`
+                              : "Drag to a card input"
+                          }
                           onClick={() => onUseImage(targetCardId, src)}
                         />
                       ))}
@@ -1516,6 +1617,7 @@ export default function App() {
     if (!cardId || !src) return;
     setCards((prev) => prev.map((card) => {
       if (card.id !== cardId || card.inputImages.includes(src)) return card;
+      if (!modelSupportsImages(card.model)) return card;
       return { ...card, inputImages: [...card.inputImages, src] };
     }));
   }, []);
@@ -1588,29 +1690,15 @@ export default function App() {
 
     const model = getModelMeta(card.model);
     if (!model) return;
+    const endpoint = resolveModelEndpoint(card, model);
+    if (!endpoint) return;
 
     // ── Local direct mode (FAL_KEY available) ──
     if (hasApiKey()) {
-      const input = {};
-      if (card.prompt.trim()) input.prompt = card.prompt.trim();
-      if (card.inputImages.length > 0) {
-        if (model.imageParam === "image_urls") {
-          input.image_urls = card.inputImages;
-        } else {
-          input.image_url = card.inputImages[0];
-        }
-      }
-
-      // Send model-specific params
-      if (model.params) {
-        for (const def of model.params) {
-          const val = card.params[def.key] ?? def.default;
-          if (val !== undefined) input[def.key] = val;
-        }
-      }
+      const input = buildModelInput(card, model);
 
       try {
-        const result = await runModel(model.endpoint, input);
+        const result = await runModel(endpoint, input);
         const images = extractOutputImages(result);
         const timestamp = new Date().toISOString();
         const record = {

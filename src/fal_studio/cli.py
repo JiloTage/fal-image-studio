@@ -130,9 +130,15 @@ def run(model: str, prompt: str, images: tuple, no_save: bool, extra: tuple, car
         extra_params[key] = _coerce_param_value(value)
 
     extra_params = _normalize_extra_params(extra_params)
+    model_config = MODELS[resolved_model]
+    has_images = bool(model_config.supports_images and resolved_images)
 
-    if not resolved_prompt and not resolved_images:
-        click.echo("Error: prompt or image input is required.", err=True)
+    if model_config.requires_prompt and not resolved_prompt:
+        click.echo("Error: prompt is required for this model.", err=True)
+        sys.exit(1)
+
+    if not has_images and not model_config.text_endpoint:
+        click.echo("Error: this model requires an input image.", err=True)
         sys.exit(1)
 
     click.echo(f"Running {resolved_model}...")
@@ -157,4 +163,5 @@ def models():
     """List available models."""
     for name, cfg in MODELS.items():
         click.echo(f"  {name:20s}  {cfg.description}")
-        click.echo(f"  {'':20s}  endpoint: {cfg.endpoint}")
+        click.echo(f"  {'':20s}  text:  {cfg.text_endpoint or '-'}")
+        click.echo(f"  {'':20s}  image: {cfg.image_endpoint or '-'}")
